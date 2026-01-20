@@ -21,90 +21,72 @@ def health():
 
 @app.post("/analyze")
 async def analyze_csv(file: UploadFile = File(...)):
-    # 1️⃣ Save uploaded CSV temporarily
     with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as tmp:
-        contents = await file.read()
-        tmp.write(contents)
+        tmp.write(await file.read())
         tmp_path = tmp.name
 
     try:
-        # 2️⃣ Read CSV
         df = pd.read_csv(tmp_path)
         df.columns = df.columns.str.strip().str.lower()
 
-        # 3️⃣ Validate required columns
         if not {"date", "district"}.issubset(df.columns):
             return {"error": "CSV must contain 'date' and 'district'"}
 
-        # 4️⃣ Aggregate daily counts
+        # Notebook-style aggregation
         df_daily = (
             df.groupby(["date", "district"])
               .size()
-              .reset_index(name="daily_count")
+              .reset_index(name="Daily_Count")
         )
 
-        # 🔹 IMPORTANT: sort for growth calculation
-        df_daily = df_daily.sort_values(["district", "date"])
-
-        # 5️⃣ Isolation Forest (Anomaly Detection)
-        model = IsolationForest(contamination=0.02, random_state=42)
-        df_daily["anomaly"] = model.fit_predict(df_daily[["daily_count"]])
-        df_daily["status"] = df_daily["anomaly"].map({
+        # NOTEBOOK MODEL (no random_state)
+        model = IsolationForest(contamination=0.02)
+        df_daily["Anomaly_Score"] = model.fit_predict(df_daily[["Daily_Count"]])
+        df_daily["Status"] = df_daily["Anomaly_Score"].map({
             1: "Normal",
             -1: "Suspicious"
         })
 
-        # 6️⃣ Growth Rate Calculation (NEW)
-        df_daily["growth_rate"] = (
+        # Notebook growth logic (no cleanup)
+        df_daily["Growth_Rate"] = (
             df_daily
-            .groupby("district")["daily_count"]
+            .groupby("district")["Daily_Count"]
             .pct_change()
         )
 
-        df_daily["growth_rate"] = (
-        df_daily["growth_rate"]
-        .replace([float("inf"), float("-inf")], 0)
-        .fillna(0)
-        )
-        
-        # 7️⃣ Future Risk Alerts (NEW)
+        # Notebook future alerts logic
         future_alerts = (
-            df_daily[df_daily["growth_rate"] > 0.5]
-            .dropna(subset=["growth_rate"])
-            .sort_values("growth_rate", ascending=False)
-            .head(15)
+            df_daily[df_daily["Growth_Rate"] > 0.5]
+            .drop_duplicates("district")
         )
 
-        # 8️⃣ Prepare response for frontend
-        response = {
+        return {
             "total_rows": int(len(df)),
             "total_days_districts": int(len(df_daily)),
             "suspicious_count": int(
-                len(df_daily[df_daily["status"] == "Suspicious"])
+                len(df_daily[df_daily["Status"] == "Suspicious"])
             ),
 
             "top_suspicious": (
-                df_daily[df_daily["status"] == "Suspicious"]
-                .sort_values("daily_count", ascending=False)
-                .head(10)
+                df_daily[df_daily["Status"] == "Suspicious"]
+                .sort_values("Daily_Count", ascending=False)
+                .head(15)
                 .to_dict(orient="records")
             ),
 
             "future_alerts": future_alerts[[
                 "district",
                 "date",
-                "daily_count",
-                "growth_rate"
+                "Daily_Count",
+                "Growth_Rate"
             ]].to_dict(orient="records"),
 
             "scatter": df_daily[[
                 "date",
-                "daily_count",
-                "status"
+                "Daily_Count",
+                "Status"
             ]].to_dict(orient="records")
         }
-
-        return response
 
     finally:
         os.remove(tmp_path)
